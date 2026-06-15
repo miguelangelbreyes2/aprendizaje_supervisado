@@ -1,8 +1,7 @@
 import os
 import pickle
-import numpy as np
-import pandas as pd
 import joblib
+import pandas as pd
 
 from flask import Flask, request, jsonify, render_template
 
@@ -11,98 +10,147 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Modelos del proyecto avanzado
+# Rutas de modelos
+PIPELINE_PATH = os.path.join(BASE_DIR, "pipeline.pkl")
 MODEL_RF_PATH = os.path.join(BASE_DIR, "model_rf.joblib")
 MODEL_LR_PATH = os.path.join(BASE_DIR, "model_lr.joblib")
 
-# Modelo simple solicitado por la clase
-MODELO_SIMPLE_PATH = os.path.join(BASE_DIR, "modelo.pkl")
-
+# Variables globales para modelos
+pipeline_model = None
 models = {}
-modelo_simple = None
 
 
-def load_models():
-    """Carga los modelos avanzados guardados con joblib."""
+def cargar_pipeline():
+    """
+    Carga el pipeline principal guardado como pipeline.pkl.
+    Este pipeline ya incluye preprocesamiento, escalamiento y modelo.
+    """
+    global pipeline_model
+
+    if os.path.exists(PIPELINE_PATH):
+        try:
+            with open(PIPELINE_PATH, "rb") as archivo_modelo:
+                pipeline_model = pickle.load(archivo_modelo)
+            print("Pipeline cargado correctamente desde pipeline.pkl")
+        except Exception as error:
+            print(f"Error al cargar pipeline.pkl: {error}")
+    else:
+        print("No se encontró pipeline.pkl. Ejecuta primero pipeline_train.py")
+
+
+def cargar_modelos_joblib():
+    """
+    Carga modelos adicionales del proyecto, si existen.
+    Estos modelos sirven para el endpoint avanzado /predict.
+    """
     if os.path.exists(MODEL_RF_PATH):
         try:
             models["rf"] = joblib.load(MODEL_RF_PATH)
-            print(f"Modelo Random Forest cargado desde {MODEL_RF_PATH}")
-        except Exception as e:
-            print(f"Error al cargar Random Forest: {e}")
+            print("Modelo Random Forest cargado correctamente")
+        except Exception as error:
+            print(f"Error al cargar model_rf.joblib: {error}")
 
     if os.path.exists(MODEL_LR_PATH):
         try:
             models["lr"] = joblib.load(MODEL_LR_PATH)
-            print(f"Modelo Regresión Logística cargado desde {MODEL_LR_PATH}")
-        except Exception as e:
-            print(f"Error al cargar Regresión Logística: {e}")
+            print("Modelo Regresión Logística cargado correctamente")
+        except Exception as error:
+            print(f"Error al cargar model_lr.joblib: {error}")
 
 
-def load_simple_model():
-    """Carga el modelo simple solicitado en la lección usando pickle."""
-    global modelo_simple
-
-    if os.path.exists(MODELO_SIMPLE_PATH):
-        try:
-            with open(MODELO_SIMPLE_PATH, "rb") as file:
-                modelo_simple = pickle.load(file)
-            print(f"Modelo simple cargado desde {MODELO_SIMPLE_PATH}")
-        except Exception as e:
-            print(f"Error al cargar modelo.pkl: {e}")
-    else:
-        print("No se encontró modelo.pkl")
-
-
-load_models()
-load_simple_model()
+cargar_pipeline()
+cargar_modelos_joblib()
 
 
 @app.route("/")
 def index():
-    """Renderiza la página principal."""
-    return render_template("index.html")
+    """
+    Página principal de la aplicación.
+    Si existe templates/index.html, lo muestra.
+    """
+    try:
+        return render_template("index.html")
+    except Exception:
+        return jsonify({
+            "mensaje": "API de predicción del Titanic funcionando correctamente",
+            "endpoints": {
+                "predecir": "/predecir",
+                "predict": "/predict"
+            }
+        })
 
 
 @app.route("/predecir", methods=["POST"])
 def predecir():
     """
-    Endpoint solicitado en la lección 2.5.
+    Endpoint principal de la clase 2.6 Pipelines.
 
-    Recibe un JSON con este formato:
+    Recibe datos sin transformar, por ejemplo:
     {
-        "input": [0, 0, 0, 0, 0, 0, 0]
+        "Pclass": 2,
+        "Sex": "male",
+        "Age": 46,
+        "SibSp": 0,
+        "Parch": 0,
+        "Fare": 7.25,
+        "Embarked": "C"
     }
 
-    Regresa:
-    {
-        "prediccion": 1
-    }
+    El pipeline se encarga de transformar los datos y hacer la predicción.
     """
     try:
-        if modelo_simple is None:
+        if pipeline_model is None:
             return jsonify({
-                "error": "El modelo simple no está disponible. Verifica que exista modelo.pkl."
+                "error": "El pipeline no está disponible. Ejecuta primero pipeline_train.py para generar pipeline.pkl."
             }), 500
 
-        data = request.get_json(force=True)
+        data = request.get_json()
 
-        if "input" not in data:
+        if not data:
             return jsonify({
-                "error": "Falta la clave 'input' en el JSON."
+                "error": "No se recibieron datos en formato JSON."
             }), 400
 
-        input_data = np.array(data["input"]).reshape(1, -1)
+        columnas_requeridas = [
+            "Pclass",
+            "Sex",
+            "Age",
+            "SibSp",
+            "Parch",
+            "Fare",
+            "Embarked"
+        ]
 
-        prediccion = modelo_simple.predict(input_data)
+        columnas_faltantes = [
+            columna for columna in columnas_requeridas
+            if columna not in data
+        ]
+
+        if columnas_faltantes:
+            return jsonify({
+                "error": "Faltan columnas en el JSON.",
+                "columnas_faltantes": columnas_faltantes
+            }), 400
+
+        input_data = pd.DataFrame([{
+            "Pclass": int(data["Pclass"]),
+            "Sex": str(data["Sex"]).lower(),
+            "Age": float(data["Age"]),
+            "SibSp": int(data["SibSp"]),
+            "Parch": int(data["Parch"]),
+            "Fare": float(data["Fare"]),
+            "Embarked": str(data["Embarked"]).upper()
+        }])
+
+        prediccion = pipeline_model.predict(input_data)
 
         return jsonify({
-            "prediccion": int(prediccion[0])
+            "Survived": int(prediccion[0])
         })
 
-    except Exception as e:
+    except Exception as error:
         return jsonify({
-            "error": f"Error al realizar la predicción: {str(e)}"
+            "error": f"Error al realizar la predicción: {str(error)}"
         }), 500
 
 
@@ -110,59 +158,53 @@ def predecir():
 def predict():
     """
     Endpoint avanzado del proyecto.
-
-    Este endpoint usa pipelines de Scikit-Learn y permite enviar datos más entendibles,
-    como Sex='male' o Embarked='S'.
+    Permite elegir entre Random Forest y Regresión Logística si existen los modelos joblib.
     """
     try:
         data = request.get_json()
 
         if not data:
-            return jsonify({"error": "No se proporcionaron datos de entrada"}), 400
+            return jsonify({
+                "error": "No se recibieron datos en formato JSON."
+            }), 400
 
         model_type = data.get("model", "rf")
-        pipeline = models.get(model_type)
+        modelo = models.get(model_type)
 
-        if not pipeline:
-            load_models()
-            pipeline = models.get(model_type)
+        if modelo is None:
+            return jsonify({
+                "error": f"El modelo '{model_type}' no está disponible. Verifica que exista model_rf.joblib o model_lr.joblib."
+            }), 500
 
-            if not pipeline:
-                return jsonify({
-                    "error": f'El modelo "{model_type}" no está disponible. Ejecuta train.py primero.'
-                }), 500
-
-        features = {
+        input_data = pd.DataFrame([{
             "Pclass": int(data.get("Pclass", 3)),
             "Sex": str(data.get("Sex", "male")).lower(),
-            "Age": float(data.get("Age", 28.0)),
+            "Age": float(data.get("Age", 28)),
             "SibSp": int(data.get("SibSp", 0)),
             "Parch": int(data.get("Parch", 0)),
-            "Fare": float(data.get("Fare", 20.0)),
+            "Fare": float(data.get("Fare", 7.25)),
             "Embarked": str(data.get("Embarked", "S")).upper()
-        }
+        }])
 
-        input_df = pd.DataFrame([features])
+        prediccion = int(modelo.predict(input_data)[0])
 
-        prediction = int(pipeline.predict(input_df)[0])
-
-        probability = None
+        probabilidad = None
 
         try:
-            prob_array = pipeline.predict_proba(input_df)[0]
-            probability = float(prob_array[prediction])
+            probabilidades = modelo.predict_proba(input_data)[0]
+            probabilidad = float(probabilidades[prediccion])
         except Exception:
             pass
 
         return jsonify({
-            "prediction": prediction,
-            "probability": probability,
+            "prediction": prediccion,
+            "probability": probabilidad,
             "model_used": "Random Forest" if model_type == "rf" else "Regresión Logística"
         })
 
-    except Exception as e:
+    except Exception as error:
         return jsonify({
-            "error": f"Error en el procesamiento: {str(e)}"
+            "error": f"Error en el procesamiento: {str(error)}"
         }), 500
 
 
